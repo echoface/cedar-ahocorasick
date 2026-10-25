@@ -17,6 +17,8 @@ var (
 	ErrInvalidKey = errors.New("cedar: invalid key")
 	// ErrInvalidVal invalid value error
 	ErrInvalidVal = errors.New("cedar: invalid val")
+	// ErrInvalidData malformed serialized trie error
+	ErrInvalidData = errors.New("cedar: invalid data")
 )
 
 func isReduced(reduced ...bool) bool {
@@ -27,7 +29,7 @@ func isReduced(reduced ...bool) bool {
 	return true
 }
 
-func (cd *Cedar) get(key []byte, from, pos int) *int {
+func (cd *Cedar) get(key []byte, from, pos int) *int32 {
 	to := cd.getNode(key, from, pos)
 	return &cd.array[to].baseV
 }
@@ -56,18 +58,32 @@ func (cd *Cedar) getNode(key []byte, from, pos int) int {
 
 // Jump jump a node `from` to another node by following the `path`, split by find()
 func (cd *Cedar) Jump(key []byte, from int) (to int, err error) {
-	// pos := 0
-	// recursively matching the key.
-	for _, k := range key {
-		if cd.array[from].baseV >= 0 && cd.Reduced {
-			return from, ErrNoKey
+	// hoist the loop invariants; this is the hot path of every lookup.
+	arr := cd.array
+	if cd.Reduced {
+		for _, k := range key {
+			v := arr[from].baseV
+			if v >= 0 {
+				return from, ErrNoKey
+			}
+
+			to = -(int(v) + 1) ^ int(k)
+			if int(arr[to].check) != from {
+				return from, ErrNoKey
+			}
+			from = to
 		}
-		if cd.array[from].baseV < 0 && !cd.Reduced {
+		return to, nil
+	}
+
+	for _, k := range key {
+		v := arr[from].baseV
+		if v < 0 {
 			return from, ErrNoKey
 		}
 
-		to = cd.array[from].base(cd.Reduced) ^ int(k)
-		if cd.array[to].check != from {
+		to = int(v) ^ int(k)
+		if int(arr[to].check) != from {
 			return from, ErrNoKey
 		}
 		from = to
@@ -82,7 +98,7 @@ func (cd *Cedar) Find(key []byte, from int) (int, error) {
 	if cd.Reduced {
 		if cd.array[to].baseV >= 0 {
 			if err == nil && to != 0 {
-				return cd.array[to].baseV, nil
+				return int(cd.array[to].baseV), nil
 			}
 			return 0, ErrNoKey
 		}
@@ -99,28 +115,28 @@ func (cd *Cedar) Find(key []byte, from int) (int, error) {
 		return 0, ErrNoKey
 	}
 	n := cd.array[base]
-	if n.check != to {
+	if int(n.check) != to {
 		return 0, ErrNoKey
 	}
-	return n.baseV, nil
+	return int(n.baseV), nil
 }
 
 // Value get the path value
 func (cd *Cedar) Value(path int) (val int, err error) {
-	val = cd.array[path].baseV
+	val = int(cd.array[path].baseV)
 	if val >= 0 && cd.Reduced {
 		return val, nil
 	}
 
 	to := cd.array[path].base(cd.Reduced)
 	if to >= 0 && to < len(cd.array) &&
-		cd.array[to].check == path && cd.array[to].baseV >= 0 {
-		return cd.array[to].baseV, nil
+		int(cd.array[to].check) == path && cd.array[to].baseV >= 0 {
+		return int(cd.array[to].baseV), nil
 	}
 
 	// For non-reduced: if this IS a terminal node (0-child), baseV is the stored value
 	if !cd.Reduced && val >= 0 {
-		from := cd.array[path].check
+		from := int(cd.array[path].check)
 		if from >= 0 {
 			base := cd.array[from].base(cd.Reduced)
 			if byte(path^base) == 0 {
@@ -139,7 +155,7 @@ func (cd *Cedar) Insert(key []byte, val int) error {
 	}
 
 	p := cd.get(key, 0, 0)
-	*p = val
+	*p = int32(val)
 
 	return nil
 }
@@ -148,12 +164,18 @@ func (cd *Cedar) Insert(key []byte, val int) error {
 func (cd *Cedar) Update(key []byte, value int) error {
 	p := cd.get(key, 0, 0)
 
-	if *p == ValLimit && cd.Reduced {
-		*p = value
-		return nil
+	cur := int(*p)
+	if cur == ValLimit && cd.Reduced {
+		cur = 0
 	}
 
-	*p += value
+	// values are stored as int32; reject sums that leave [0, ValLimit)
+	value += cur
+	if value < 0 || value >= ValLimit {
+		return ErrInvalidVal
+	}
+
+	*p = int32(value)
 	return nil
 }
 
@@ -167,7 +189,7 @@ func (cd *Cedar) Delete(key []byte) error {
 
 	if cd.array[to].baseV < 0 && cd.Reduced {
 		base := cd.array[to].base(cd.Reduced)
-		if cd.array[base].check == to {
+		if int(cd.array[base].check) == to {
 			to = base
 		}
 	}
@@ -178,7 +200,7 @@ func (cd *Cedar) Delete(key []byte) error {
 
 	from := to
 	for to > 0 {
-		from = cd.array[to].check
+		from = int(cd.array[to].check)
 		base := cd.array[from].base(cd.Reduced)
 		label := byte(to ^ base)
 
@@ -275,6 +297,37 @@ func (cd *Cedar) PrefixPredict(key []byte, n ...int) (ids []int) {
 	return
 }
 
+// Size returns the length of the double array; every node index is below it.
+func (cd *Cedar) Size() int {
+	return cd.size
+}
+
+// Children appends the labels of the edges leaving node `from` to dst, in
+// sibling-chain order, skipping the terminal edge (label 0).
+// Follow an edge with Jump.
+func (cd *Cedar) Children(from int, dst []byte) []byte {
+	base := cd.array[from].base(cd.Reduced)
+	if base < 0 {
+		return dst
+	}
+
+	c := cd.nInfos[from].child
+	if c == 0 {
+		// the chain starts at the terminal slot: either a real 0-child, or the
+		// node itself when base == from (the root); otherwise no children.
+		if base != from && int(cd.array[base].check) != from {
+			return dst
+		}
+		c = cd.nInfos[base].sibling
+	}
+
+	for ; c != 0; c = cd.nInfos[base^int(c)].sibling {
+		dst = append(dst, c)
+	}
+
+	return dst
+}
+
 // To get the cursor of the first leaf node starting by `from`
 func (cd *Cedar) begin(from int) (to int, err error) {
 	// recursively traversing down to look for the first leaf.
@@ -297,7 +350,7 @@ func (cd *Cedar) next(from int, root int) (to int, err error) {
 
 	// traversing up until there is a sibling or it has reached the root.
 	for c == 0 && from != root && cd.array[from].check >= 0 {
-		from = cd.array[from].check
+		from = int(cd.array[from].check)
 		c = cd.nInfos[from].sibling
 	}
 
