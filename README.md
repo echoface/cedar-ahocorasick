@@ -99,6 +99,34 @@ value=100 at=7 len=9 key="太阳系"
 
 See [examples/aho](examples/aho/main.go) for the full demo (`go run ./examples/aho`).
 
+### Snapshots and mmap
+
+Both layers have fixed-layout, CRC-checked, atomically-written snapshot APIs.
+Matcher snapshots include failure/output links, so opening one is ready to
+match without recompilation.
+
+```go
+m := aho.NewStrings("he", "she", "hers")
+m.Compile()
+if err := m.SaveSnapshot("matcher.snp"); err != nil { ... }
+
+s, err := aho.OpenSnapshot("matcher.snp")
+if err != nil { ... }
+defer s.Close()
+for _, t := range s.Matcher().MatchString("ushers") { ... }
+
+// trie-only snapshot
+trie := cedar.New()
+trie.Insert([]byte("key"), 1)
+trie.SaveSnapshot("trie.snp")
+cs, _ := cedar.OpenSnapshot("trie.snp")
+defer cs.Close()
+```
+
+Snapshots are immutable and read-only in v1: close the snapshot, mutate an
+in-memory trie, and save a new file. The format is little-endian only. See
+[SNAPSHOT.md](SNAPSHOT.md) for the exact layout, validation rules, and versioning.
+
 ## License
 
 This is released under the BSD-2 license, following the original license of C++ cedar.

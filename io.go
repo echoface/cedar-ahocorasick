@@ -14,7 +14,7 @@ import (
 // by the gob and JSON encoders.
 type cedarData struct {
 	Reduced bool
-	Array   []int32 // baseV, check pairs
+	Array   []int32 // BaseV, check pairs
 	NInfos  []byte  // sibling, child pairs
 	Blocks  []int32 // prev, next, num, reject, trial, eHead per block
 	Reject  [257]int32
@@ -41,13 +41,13 @@ func (cd *Cedar) toData() *cedarData {
 		MaxTrial:   cd.maxTrial,
 	}
 	for _, n := range cd.array[:cd.size] {
-		d.Array = append(d.Array, n.baseV, n.check)
+		d.Array = append(d.Array, n.BaseV, n.Check)
 	}
 	for _, n := range cd.nInfos[:cd.size] {
-		d.NInfos = append(d.NInfos, n.sibling, n.child)
+		d.NInfos = append(d.NInfos, n.Sibling, n.Child)
 	}
 	for _, b := range cd.blocks[:cd.size>>8] {
-		d.Blocks = append(d.Blocks, b.prev, b.next, b.num, b.reject, b.trial, b.eHead)
+		d.Blocks = append(d.Blocks, b.Prev, b.Next, b.Num, b.Reject, b.Trial, b.EHead)
 	}
 
 	return d
@@ -74,14 +74,14 @@ func (cd *Cedar) fromData(d *cedarData) error {
 		maxTrial:         d.MaxTrial,
 	}
 	for i := range cd.array[:d.Size] {
-		cd.array[i] = Node{baseV: d.Array[2*i], check: d.Array[2*i+1]}
+		cd.array[i] = Node{BaseV: d.Array[2*i], Check: d.Array[2*i+1]}
 	}
 	for i := range cd.nInfos[:d.Size] {
-		cd.nInfos[i] = NInfo{sibling: d.NInfos[2*i], child: d.NInfos[2*i+1]}
+		cd.nInfos[i] = NInfo{Sibling: d.NInfos[2*i], Child: d.NInfos[2*i+1]}
 	}
 	for i := range cd.blocks[:d.Size>>8] {
 		b := d.Blocks[6*i : 6*i+6]
-		cd.blocks[i] = Block{prev: b[0], next: b[1], num: b[2], reject: b[3], trial: b[4], eHead: b[5]}
+		cd.blocks[i] = Block{Prev: b[0], Next: b[1], Num: b[2], Reject: b[3], Trial: b[4], EHead: b[5]}
 	}
 
 	return nil

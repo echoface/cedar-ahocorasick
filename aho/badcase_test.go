@@ -1,4 +1,4 @@
-package cedar
+package aho
 
 import (
 	"bufio"
@@ -19,7 +19,7 @@ https://github.com/iohub/ahocorasick/issues/16
 // loadBadcaseKeywords 从 kws.txt 加载关键词
 func loadBadcaseKeywords(t *testing.T) []string {
 	t.Helper()
-	f, err := os.Open(filepath.Join("testdata", "kws.txt"))
+	f, err := os.Open(filepath.Join("..", "testdata", "aho", "kws.txt"))
 	if err != nil {
 		t.Fatalf("open kws.txt failed: %v", err)
 	}
@@ -46,11 +46,11 @@ type matchResultKey struct {
 }
 
 // collectResults 收集匹配结果并排序去重
-func collectResults(results []MatchResult) []matchResultKey {
+func collectResults(results []Token) []matchResultKey {
 	seen := make(map[matchResultKey]bool)
 	var out []matchResultKey
 	for _, r := range results {
-		k := matchResultKey{Value: r.Value, Position: r.Position}
+		k := matchResultKey{Value: r.Value, Position: r.At + r.Len}
 		if !seen[k] {
 			seen[k] = true
 			out = append(out, k)
@@ -90,7 +90,7 @@ func TestBadcaseNonDeterminism(t *testing.T) {
 	var baseline []matchResultKey
 
 	for round := 0; round < rounds; round++ {
-		ac := NewAhoCorasick()
+		ac := New()
 
 		// 插入所有关键词
 		for i, kw := range keywords {
@@ -98,7 +98,7 @@ func TestBadcaseNonDeterminism(t *testing.T) {
 				t.Fatalf("round %d: insert %q failed: %v", round, kw, err)
 			}
 		}
-		ac.Build()
+		ac.Compile()
 
 		// 执行匹配
 		results := ac.Match([]byte(content))
@@ -152,13 +152,13 @@ func TestBadcaseCompareWithCloudflare(t *testing.T) {
 	content := "休闲益智不烧脑,没wifi我也能玩一整天!,良心游戏，真送红包,红包,提现,现金,免费,红包提现,赚钱,挂机,网赚,亿万人生,刷宝,彩票,体彩,羊毛党,金币,短视频,疯狂猜成语,休闲游戏,爱上消消消,每天,明星,王二狗的摊位"
 
 	// 使用本地 cedar 库
-	ac := NewAhoCorasick()
+	ac := New()
 	keyList := make([][]byte, len(keywords))
 	for i, kw := range keywords {
 		ac.Insert([]byte(kw), i)
 		keyList[i] = []byte(kw)
 	}
-	ac.Build()
+	ac.Compile()
 
 	results := ac.Match([]byte(content))
 
@@ -206,13 +206,13 @@ func TestBadcaseSmallDeterministic(t *testing.T) {
 	var baseline []matchResultKey
 
 	for round := 0; round < rounds; round++ {
-		ac := NewAhoCorasick()
+		ac := New()
 		for i, kw := range keywords {
 			if err := ac.Insert([]byte(kw), i); err != nil {
 				t.Fatalf("insert failed: %v", err)
 			}
 		}
-		ac.Build()
+		ac.Compile()
 
 		results := ac.Match([]byte(content))
 		collected := collectResults(results)
@@ -240,19 +240,19 @@ func TestBadcaseInsertOrderIndependence(t *testing.T) {
 	content := "真送红包,红包提现,赚钱,刷宝,彩票"
 
 	// 正向插入
-	ac1 := NewAhoCorasick()
+	ac1 := New()
 	for i, kw := range keywords {
 		ac1.Insert([]byte(kw), i)
 	}
-	ac1.Build()
+	ac1.Compile()
 	r1 := collectResults(ac1.Match([]byte(content)))
 
 	// 反向插入
-	ac2 := NewAhoCorasick()
+	ac2 := New()
 	for i := len(keywords) - 1; i >= 0; i-- {
 		ac2.Insert([]byte(keywords[i]), i)
 	}
-	ac2.Build()
+	ac2.Compile()
 	r2 := collectResults(ac2.Match([]byte(content)))
 
 	// 注意：由于 value 不同（插入顺序不同），我们只比较匹配数量
@@ -268,14 +268,14 @@ func TestBadcaseRepeatedBuild(t *testing.T) {
 	keywords := []string{"红包", "提现", "现金", "免费", "红包提现", "赚钱"}
 	content := "真送红包,红包提现,赚钱"
 
-	ac := NewAhoCorasick()
+	ac := New()
 	for i, kw := range keywords {
 		ac.Insert([]byte(kw), i)
 	}
 
 	var baseline []matchResultKey
 	for i := 0; i < 10; i++ {
-		ac.Build()
+		ac.Compile()
 		results := ac.Match([]byte(content))
 		collected := collectResults(results)
 
@@ -288,16 +288,16 @@ func TestBadcaseRepeatedBuild(t *testing.T) {
 	t.Log("repeated Build test passed")
 }
 
-// TestBadcaseMatchAllConsistency 测试 Match 和 MatchAll 的一致性
-func TestBadcaseMatchAllConsistency(t *testing.T) {
+// TestBadcaseMatchConsistency verifies Match reports every substring hit.
+func TestBadcaseMatchConsistency(t *testing.T) {
 	keywords := loadBadcaseKeywords(t)
 	content := "休闲益智不烧脑,没wifi我也能玩一整天!,良心游戏，真送红包,红包,提现,现金,免费,红包提现,赚钱,挂机,网赚,亿万人生,刷宝,彩票,体彩,羊毛党,金币,短视频,疯狂猜成语,休闲游戏,爱上消消消,每天,明星,王二狗的摊位"
 
-	ac := NewAhoCorasick()
+	ac := New()
 	for i, kw := range keywords {
 		ac.Insert([]byte(kw), i)
 	}
-	ac.Build()
+	ac.Compile()
 
 	// Match 结果中的唯一 values
 	results := ac.Match([]byte(content))
@@ -306,22 +306,16 @@ func TestBadcaseMatchAllConsistency(t *testing.T) {
 		matchValues[r.Value] = true
 	}
 
-	// MatchAll 结果
-	matchAllValues := make(map[int]bool)
-	for _, v := range ac.MatchAll([]byte(content)) {
-		matchAllValues[v] = true
-	}
-
-	// MatchAll 的结果应该都在 Match 中出现过
-	for v := range matchAllValues {
-		if !matchValues[v] {
-			t.Errorf("MatchAll returned value %d (%q) not found in Match results",
-				v, keywords[v])
+	for i, kw := range keywords {
+		if !strings.Contains(content, kw) {
+			continue
+		}
+		if !matchValues[i] {
+			t.Errorf("substring %q was not reported by Match", kw)
 		}
 	}
 
-	t.Logf("Match: %d unique values, MatchAll: %d unique values",
-		len(matchValues), len(matchAllValues))
+	t.Logf("Match: %d unique values", len(matchValues))
 }
 
 // BenchmarkBadcase 性能基准测试
@@ -331,11 +325,11 @@ func BenchmarkBadcaseFull(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ac := NewAhoCorasick()
+		ac := New()
 		for j, kw := range keywords {
 			ac.Insert([]byte(kw), j)
 		}
-		ac.Build()
+		ac.Compile()
 		ac.Match([]byte(content))
 	}
 }
@@ -345,11 +339,11 @@ func BenchmarkBadcaseMatchOnly(b *testing.B) {
 	keywords := loadBadcaseKeywordsForBench()
 	content := "休闲益智不烧脑,没wifi我也能玩一整天!,良心游戏，真送红包,红包,提现,现金,免费,红包提现,赚钱,挂机,网赚,亿万人生,刷宝,彩票,体彩,羊毛党,金币,短视频,疯狂猜成语,休闲游戏,爱上消消消,每天,明星,王二狗的摊位"
 
-	ac := NewAhoCorasick()
+	ac := New()
 	for j, kw := range keywords {
 		ac.Insert([]byte(kw), j)
 	}
-	ac.Build()
+	ac.Compile()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -359,7 +353,7 @@ func BenchmarkBadcaseMatchOnly(b *testing.B) {
 
 // loadBadcaseKeywordsForBench 用于 benchmark 中加载关键词（不依赖 *testing.T）
 func loadBadcaseKeywordsForBench() []string {
-	f, err := os.Open(filepath.Join("testdata", "kws.txt"))
+	f, err := os.Open(filepath.Join("..", "testdata", "aho", "kws.txt"))
 	if err != nil {
 		panic(fmt.Sprintf("open kws.txt failed: %v", err))
 	}

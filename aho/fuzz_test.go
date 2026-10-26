@@ -1,6 +1,7 @@
-package cedar
+package aho
 
 import (
+	"github.com/vcaesar/cedar"
 	"math/rand"
 	"sort"
 	"testing"
@@ -18,11 +19,11 @@ func FuzzCedarInsertGet(f *testing.F) {
 		if len(key) == 0 {
 			return // 空 key 不被支持
 		}
-		if value < 0 || value >= ValLimit {
+		if value < 0 || value >= cedar.ValLimit {
 			return // 跳过无效值
 		}
 
-		cd := New()
+		cd := cedar.New()
 
 		// Insert
 		err := cd.Insert(key, value)
@@ -55,11 +56,11 @@ func FuzzCedarInsertDelete(f *testing.F) {
 	f.Add([]byte("test"), 42)
 
 	f.Fuzz(func(t *testing.T, key []byte, value int) {
-		if value < 0 || value >= ValLimit {
+		if value < 0 || value >= cedar.ValLimit {
 			return
 		}
 
-		cd := New()
+		cd := cedar.New()
 
 		// Insert
 		if err := cd.Insert(key, value); err != nil {
@@ -90,7 +91,7 @@ func FuzzCedarPrefixMatch(f *testing.F) {
 	f.Add([]byte("abc"), []byte("abcdef"), 1, 2)
 
 	f.Fuzz(func(t *testing.T, prefix []byte, full []byte, v1 int, v2 int) {
-		if v1 < 0 || v1 >= ValLimit || v2 < 0 || v2 >= ValLimit {
+		if v1 < 0 || v1 >= cedar.ValLimit || v2 < 0 || v2 >= cedar.ValLimit {
 			return
 		}
 		if len(prefix) == 0 || len(full) == 0 {
@@ -100,7 +101,7 @@ func FuzzCedarPrefixMatch(f *testing.F) {
 			return
 		}
 
-		cd := New()
+		cd := cedar.New()
 
 		// Insert prefix 和 full
 		if err := cd.Insert(prefix, v1); err != nil {
@@ -135,7 +136,7 @@ func FuzzCedarPrefixPredict(f *testing.F) {
 	f.Add([]byte("abc"), []byte("abcdef"), 1, 2)
 
 	f.Fuzz(func(t *testing.T, prefix []byte, full []byte, v1 int, v2 int) {
-		if v1 < 0 || v1 >= ValLimit || v2 < 0 || v2 >= ValLimit {
+		if v1 < 0 || v1 >= cedar.ValLimit || v2 < 0 || v2 >= cedar.ValLimit {
 			return
 		}
 		if len(prefix) == 0 || len(full) == 0 {
@@ -145,7 +146,7 @@ func FuzzCedarPrefixPredict(f *testing.F) {
 			return
 		}
 
-		cd := New()
+		cd := cedar.New()
 
 		if err := cd.Insert(prefix, v1); err != nil {
 			t.Fatalf("Insert prefix failed: %v", err)
@@ -179,11 +180,11 @@ func FuzzCedarUpdate(f *testing.F) {
 	f.Add([]byte("counter"), 1)
 
 	f.Fuzz(func(t *testing.T, key []byte, delta int) {
-		if delta <= 0 || delta >= ValLimit {
+		if delta <= 0 || delta >= cedar.ValLimit {
 			return
 		}
 
-		cd := New()
+		cd := cedar.New()
 
 		// 第一次 Update（相当于 Insert）
 		if err := cd.Update(key, delta); err != nil {
@@ -218,14 +219,14 @@ func FuzzCedarJump(f *testing.F) {
 	f.Add([]byte("hello"), []byte("world"), 1, 2)
 
 	f.Fuzz(func(t *testing.T, key1 []byte, key2 []byte, v1 int, v2 int) {
-		if v1 < 0 || v1 >= ValLimit || v2 < 0 || v2 >= ValLimit {
+		if v1 < 0 || v1 >= cedar.ValLimit || v2 < 0 || v2 >= cedar.ValLimit {
 			return
 		}
 		if len(key1) == 0 || len(key2) == 0 {
 			return
 		}
 
-		cd := New()
+		cd := cedar.New()
 
 		// 插入 key1 和 key1+key2
 		combined := append([]byte{}, key1...)
@@ -271,14 +272,14 @@ func FuzzCedarChinese(f *testing.F) {
 	f.Add([]byte("搜索引擎"), 5)
 
 	f.Fuzz(func(t *testing.T, key []byte, value int) {
-		if value < 0 || value >= ValLimit {
+		if value < 0 || value >= cedar.ValLimit {
 			return
 		}
 		if len(key) == 0 {
 			return
 		}
 
-		cd := New()
+		cd := cedar.New()
 
 		if err := cd.Insert(key, value); err != nil {
 			t.Fatalf("Insert(%q, %d) failed: %v", key, value, err)
@@ -321,7 +322,7 @@ func FuzzCedarACBasic(f *testing.F) {
 			return
 		}
 
-		ac := NewAhoCorasick()
+		ac := New()
 		patterns := [][]byte{p1, p2, p3}
 
 		for i, p := range patterns {
@@ -329,30 +330,20 @@ func FuzzCedarACBasic(f *testing.F) {
 				t.Fatalf("Insert pattern %d failed: %v", i, err)
 			}
 		}
-		ac.Build()
+		ac.Compile()
 
 		results := ac.Match(text)
 
 		// 验证每个匹配结果的 Position 在有效范围内
 		for _, r := range results {
-			if r.Position < 1 || r.Position > len(text) {
-				t.Errorf("invalid position %d (text len=%d)", r.Position, len(text))
+			if r.At < 0 || r.At+r.Len > len(text) {
+				t.Errorf("invalid position %d (text len=%d)", r.At+r.Len, len(text))
 			}
 			if r.Value < 0 || r.Value >= len(patterns) {
 				t.Errorf("invalid value %d (num patterns=%d)", r.Value, len(patterns))
 			}
 		}
 
-		// 验证 MatchAll 的结果是 Match 的子集
-		matchValues := make(map[int]bool)
-		for _, r := range results {
-			matchValues[r.Value] = true
-		}
-		for _, v := range ac.MatchAll(text) {
-			if !matchValues[v] {
-				t.Errorf("MatchAll returned value %d not in Match results", v)
-			}
-		}
 	})
 }
 
@@ -367,14 +358,14 @@ func FuzzCedarACDeterminism(f *testing.F) {
 		}
 
 		patterns := [][]byte{p1, p2, p3}
-		var baseline []MatchResult
+		var baseline []Token
 
 		for round := 0; round < 5; round++ {
-			ac := NewAhoCorasick()
+			ac := New()
 			for i, p := range patterns {
 				ac.Insert(p, i)
 			}
-			ac.Build()
+			ac.Compile()
 
 			results := ac.Match(text)
 
@@ -409,7 +400,7 @@ func FuzzCedarACChinese(f *testing.F) {
 			return
 		}
 
-		ac := NewAhoCorasick()
+		ac := New()
 		patterns := [][]byte{p1, p2, p3}
 
 		for i, p := range patterns {
@@ -417,7 +408,7 @@ func FuzzCedarACChinese(f *testing.F) {
 				t.Fatalf("Insert pattern %d failed: %v", i, err)
 			}
 		}
-		ac.Build()
+		ac.Compile()
 
 		results := ac.Match(text)
 
@@ -438,16 +429,6 @@ func FuzzCedarACChinese(f *testing.F) {
 			}
 		}
 
-		// 验证 MatchAll 一致性
-		matchValues := make(map[int]bool)
-		for _, r := range results {
-			matchValues[r.Value] = true
-		}
-		for _, v := range ac.MatchAll(text) {
-			if !matchValues[v] {
-				t.Errorf("MatchAll inconsistency: value %d not in Match results", v)
-			}
-		}
 	})
 }
 
@@ -463,19 +444,19 @@ func FuzzCedarACInsertOrder(f *testing.F) {
 		patterns := [][]byte{p1, p2, p3}
 
 		// 正向插入
-		ac1 := NewAhoCorasick()
+		ac1 := New()
 		for i, p := range patterns {
 			ac1.Insert(p, i)
 		}
-		ac1.Build()
+		ac1.Compile()
 		r1 := ac1.Match(text)
 
 		// 反向插入
-		ac2 := NewAhoCorasick()
+		ac2 := New()
 		for i := len(patterns) - 1; i >= 0; i-- {
 			ac2.Insert(patterns[i], i)
 		}
-		ac2.Build()
+		ac2.Compile()
 		r2 := ac2.Match(text)
 
 		// 比较匹配数量（value 不同因为插入顺序不同，但数量应一致）
@@ -495,9 +476,9 @@ func FuzzCedarACEmptyAndSingle(f *testing.F) {
 			return
 		}
 
-		ac := NewAhoCorasick()
+		ac := New()
 		ac.Insert(pattern, 0)
-		ac.Build()
+		ac.Compile()
 
 		results := ac.Match(text)
 
@@ -513,8 +494,8 @@ func FuzzCedarACEmptyAndSingle(f *testing.F) {
 
 		// 验证 Position 范围
 		for _, r := range results {
-			if r.Position < 1 || r.Position > len(text) {
-				t.Errorf("position %d out of range [1, %d]", r.Position, len(text))
+			if r.At < 0 || r.At+r.Len > len(text) {
+				t.Errorf("position %d out of range [1, %d]", r.At+r.Len, len(text))
 			}
 		}
 	})
@@ -532,19 +513,19 @@ func FuzzCedarACReducedVsNonReduced(f *testing.F) {
 		patterns := [][]byte{p1, p2, p3}
 
 		// Reduced 模式
-		acReduced := NewAhoCorasick(true)
+		acReduced := New(true)
 		for i, p := range patterns {
 			acReduced.Insert(p, i)
 		}
-		acReduced.Build()
+		acReduced.Compile()
 		rReduced := acReduced.Match(text)
 
 		// Non-Reduced 模式
-		acNonReduced := NewAhoCorasick(false)
+		acNonReduced := New(false)
 		for i, p := range patterns {
 			acNonReduced.Insert(p, i)
 		}
-		acNonReduced.Build()
+		acNonReduced.Compile()
 		rNonReduced := acNonReduced.Match(text)
 
 		// 两种模式应该产生相同数量的匹配

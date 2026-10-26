@@ -62,6 +62,19 @@ func main() {
 		fmt.Println("prefix h -> node", id, "value", v)
 	}
 
+	// Persist a fixed-layout snapshot that can be mmap-restored without
+	// recompiling the failure links.
+	snap := filepath.Join(dir, "matcher.snp")
+	if err := m.SaveSnapshot(snap); err != nil {
+		log.Fatal(err)
+	}
+	loadedSnap, err := aho.OpenSnapshot(snap)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer loadedSnap.Close()
+	fmt.Println("snapshot:", loadedSnap.Matcher().MatchString("ushers"))
+
 	// Dump the automaton for Graphviz: dot -Tsvg trie.gv -o trie.svg
 	if err := loaded.DumpGraph("trie.gv"); err != nil {
 		log.Fatal(err)
