@@ -1,25 +1,30 @@
 # cedar
 
-[![Build Status](https://github.com/vcaesar/cedar/actions/workflows/go.yml/badge.svg)](https://github.com/vcaesar/cedar/actions/workflows/go.yml)
-[![CircleCI Status](https://dl.circleci.com/status-badge/img/gh/vcaesar/cedar/tree/main.svg?style=shield)](https://dl.circleci.com/status-badge/redirect/gh/vcaesar/cedar/tree/main)
-[![codecov](https://codecov.io/gh/vcaesar/cedar/branch/main/graph/badge.svg)](https://codecov.io/gh/vcaesar/cedar)
-[![Go Report Card](https://goreportcard.com/badge/github.com/vcaesar/cedar)](https://goreportcard.com/report/github.com/vcaesar/cedar)
 [![Go Reference](https://pkg.go.dev/badge/github.com/vcaesar/cedar.svg)](https://pkg.go.dev/github.com/vcaesar/cedar)
-[![Release](https://img.shields.io/github/v/release/vcaesar/cedar)](https://github.com/vcaesar/cedar/releases/latest)
+[![Go Report Card](https://goreportcard.com/badge/github.com/vcaesar/cedar)](https://goreportcard.com/report/github.com/vcaesar/cedar)
+[![Build Status](https://github.com/vcaesar/cedar/actions/workflows/go.yml/badge.svg)](https://github.com/vcaesar/cedar/actions/workflows/go.yml)
 
-<!-- [![Join the chat at https://gitter.im/go-ego/ego](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/go-ego/ego?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge) -->
+Updatable double-array tries and Aho-Corasick matchers for Go, with a
+fixed-layout snapshot format that can be restored through `mmap` without
+rebuilding the automaton.
 
-Package `cedar` implements an updatable double-array trie and aho corasick.
+## Packages
 
-It is a Go port of [cedar](http://www.tkl.iis.u-tokyo.ac.jp/~ynaga/cedar) (see the [paper](http://www.tkl.iis.u-tokyo.ac.jp/~ynaga/papers/ynaga-coling2014.pdf)).
+| Package | API | Purpose |
+| --- | --- | --- |
+| `cedar` | `New`, `Insert`, `Get`, `Jump`, `PrefixMatch`, `SaveSnapshot`, `OpenSnapshot` | Updatable double-array trie |
+| `aho` | `New`, `Insert`, `Delete`, `Match`, `Compile`, `SaveSnapshot`, `OpenSnapshot` | Aho-Corasick matcher built on `cedar` |
+
+The root package has no aho types: the trie layer and matcher layer are
+independent public APIs, and `aho` depends on `cedar`, never the reverse.
 
 ## Install
 
-```
+```sh
 go get github.com/vcaesar/cedar
 ```
 
-## Usage
+## Trie
 
 ```go
 package main
@@ -31,25 +36,33 @@ import (
 )
 
 func main() {
-	// Create a new cedar trie.
-	d := cedar.New()
-	d.Insert([]byte("ab"), 1)
-	d.Insert([]byte("abc"), 2)
-	d.Insert([]byte("abcd"), 3)
+	trie := cedar.New()
 
-	fmt.Println(d.Jump([]byte("ab"), 0))
-	fmt.Println(d.Find([]byte("bc"), 0))
+	_ = trie.Insert([]byte("she"), 1)
+	_ = trie.Insert([]byte("hers"), 2)
 
-	fmt.Println(d.PrefixMatch([]byte("bc"), 0))
-	fmt.Println(d.ExactMatch([]byte("ab")))
+	if v, ok := trie.ExactMatch([]byte("she")); ok {
+		fmt.Println("exact:", v)
+	}
+
+	node, err := trie.Jump([]byte("she"), 0)
+	if err == nil {
+		v, _ := trie.Value(node)
+		fmt.Println("jump:", node, v)
+	}
+
+	// Every dictionary key that is a prefix of the query.
+	for _, id := range trie.PrefixMatch([]byte("hers"), 0) {
+		fmt.Println("prefix:", id)
+	}
 }
 ```
 
-### Aho-Corasick
+Keys are byte strings. Values are non-negative `int32` values (`0` through
+`math.MaxInt32-1`). The trie supports streaming inserts and deletes at any
+time; it is not safe for concurrent mutation.
 
-Package `aho` builds an Aho-Corasick automaton on top of the trie for
-multi-pattern search. Patterns can be inserted and deleted at any time; the
-failure links are rebuilt lazily on the next `Match`.
+## Aho-Corasick
 
 ```go
 package main
@@ -61,76 +74,125 @@ import (
 )
 
 func main() {
-	// NewStrings uses the pattern index as its value,
-	// or Insert patterns with your own values.
 	m := aho.NewStrings("he", "she", "his", "hers")
-	m.Insert([]byte("太阳系"), 100)
+	_ = m.Insert([]byte("太阳系"), 100)
 
 	text := []byte("ushers 太阳系")
-	fmt.Println(m.Has(text))
 	for _, t := range m.Match(text) {
-		fmt.Printf("value=%d at=%d len=%d key=%q\n", t.Value, t.At, t.Len, m.Key(text, t))
+		fmt.Printf("value=%d at=%d len=%d key=%q\n",
+			t.Value, t.At, t.Len, m.Key(text, t))
 	}
-
-	// persist the trie as "gob" or "json"
-	m.SaveToFile("patterns.json", "json")
-	loaded := aho.New()
-	loaded.LoadFromFile("patterns.json", "json")
-
-	// stream the node ids of the patterns starting with "h"
-	for id := range loaded.PrefixPredict([]byte("h"), 0, 4) {
-		fmt.Println(loaded.Cedar().Value(id))
-	}
-
-	// visualise: dot -Tsvg trie.gv -o trie.svg
-	loaded.DumpGraph("trie.gv")
 }
 ```
 
 Output:
 
-```
-true
+```text
 value=1 at=1 len=3 key="she"
 value=0 at=2 len=2 key="he"
 value=3 at=2 len=4 key="hers"
 value=100 at=7 len=9 key="太阳系"
 ```
 
-See [examples/aho](examples/aho/main.go) for the full demo (`go run ./examples/aho`).
+Failure, output, and depth links are built lazily by `Match`, or explicitly
+with `Compile`. Any `Insert` or `Delete` invalidates them and the next match
+rebuilds the links.
 
-### Snapshots and mmap
+Patterns may contain any byte except NUL, which cedar reserves as its key
+terminator. NUL in input text resets the automaton because it cannot be part
+of a match.
 
-Both layers have fixed-layout, CRC-checked, atomically-written snapshot APIs.
-Matcher snapshots include failure/output links, so opening one is ready to
-match without recompilation.
+## Snapshots
+
+Snapshots are fixed-layout, CRC-checked files. Saves are atomic: the writer
+creates a temporary file, fsyncs it, then renames it over the destination.
+A failed save leaves any previous snapshot intact.
 
 ```go
+// Matcher snapshot: includes trie plus failure/output/depth links.
 m := aho.NewStrings("he", "she", "hers")
 m.Compile()
-if err := m.SaveSnapshot("matcher.snp"); err != nil { ... }
+
+if err := m.SaveSnapshot("matcher.snp"); err != nil {
+	panic(err)
+}
 
 s, err := aho.OpenSnapshot("matcher.snp")
-if err != nil { ... }
+if err != nil {
+	panic(err)
+}
 defer s.Close()
-for _, t := range s.Matcher().MatchString("ushers") { ... }
 
-// trie-only snapshot
-trie := cedar.New()
-trie.Insert([]byte("key"), 1)
-trie.SaveSnapshot("trie.snp")
-cs, _ := cedar.OpenSnapshot("trie.snp")
-defer cs.Close()
+for _, t := range s.Matcher().MatchString("ushers") {
+	fmt.Println(t.Value, t.At, t.Len)
+}
 ```
 
-Snapshots are immutable and read-only in v1: close the snapshot, mutate an
-in-memory trie, and save a new file. The format is little-endian only. See
-[SNAPSHOT.md](SNAPSHOT.md) for the exact layout, validation rules, and versioning.
+```go
+// Trie-only snapshot.
+trie := cedar.New()
+_ = trie.Insert([]byte("key"), 1)
+
+if err := trie.SaveSnapshot("trie.snp"); err != nil {
+	panic(err)
+}
+
+s, err := cedar.OpenSnapshot("trie.snp")
+if err != nil {
+	panic(err)
+}
+defer s.Close()
+
+v, _ := s.Cedar().Get([]byte("key"))
+fmt.Println(v)
+```
+
+On Unix systems `OpenSnapshot` maps the file read-only and exposes slices
+directly into the mapping. Loaded matchers are already compiled: opening a
+snapshot does not rebuild failure links. Other platforms use a portable
+read-into-memory fallback.
+
+Snapshot properties:
+
+- v1 format is immutable; mutate an in-memory trie and save a new file
+- layout is little-endian only
+- both header and payload bytes are protected by CRC-32
+- cedar-only files and matcher files are distinguished and cannot be confused
+
+See [SNAPSHOT.md](SNAPSHOT.md) for byte layout, section kinds, validation
+rules, and the save protocol.
+
+## Portable persistence
+
+For smaller dictionaries, the original gob and JSON codecs remain available:
+
+```go
+m.SaveToFile("patterns.gob", "gob")
+
+loaded := aho.New()
+loaded.LoadFromFile("patterns.gob", "gob")
+```
+
+These formats copy and decode every element and rebuild AC links on the next
+match. Prefer snapshots for large dictionaries or fast startup.
+
+## Development
+
+```sh
+go test ./...
+go test -race ./...
+go test -bench . -run '^$' ./...
+```
+
+`aho/snapshot_test.go` covers snapshot round-trips and corrupted-file
+rejection. `aho/badcase_test.go` and `aho/fuzz_test.go` retain regression,
+determinism, and fuzz coverage for the matcher.
 
 ## License
 
-This is released under the BSD-2 license, following the original license of C++ cedar.
+BSD-2-Clause. See [LICENSE](LICENSE).
 
-## Reference
+## References
 
-- [cedar - C++ implementation of efficiently-updatable double-array trie](http://www.tkl.iis.u-tokyo.ac.jp/~ynaga/cedar/), and thanks for [cedarwood](https://github.com/MnO2/cedarwood).
+- Naoki Yoshinaga, [cedar: C++ efficiently-updatable double-array trie](http://www.tkl.iis.u-tokyo.ac.jp/~ynaga/cedar/)
+- Yoshinaga and Kitsuregawa, [A Self-adaptive Classifier for Efficient Text-stream Processing](http://www.tkl.iis.u-tokyo.ac.jp/~ynaga/papers/ynaga-coling2014.pdf), COLING 2014
